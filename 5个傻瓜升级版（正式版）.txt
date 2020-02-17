@@ -1,19 +1,21 @@
 import torch
+import torch.utils.data.dataset
 import torch.nn.modules
 import torch.nn
 import numpy as np
-from torch.autograd import Variable #torch的基本变量
-import torch.nn.functional as F #里面有很多torch的函数
+from torch.autograd import Variable
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import random
+from Util import DataLoader
 
 NUM_OF_TEST_SET=2000
 NUM_OF_PARTY=5
 PARTY_DATA=6000
 NUM_OF_ALL_DATA=32561
-NUM_OF_FEATURE=14
-#0代表不是
-#1代表是
+NUM_OF_FEATURE=14#NOT including label.
+#0 is no
+#1 is yes
 
 class Net(torch.nn.Module):
     def __init__(self,NF,NH1,NH2,NO):
@@ -25,6 +27,7 @@ class Net(torch.nn.Module):
         x=F.relu(self.layer1(input))
         x=F.relu(self.layer2(x))
         res=torch.sigmoid(self.layer3(x))
+        res=self.out(res)
         return res
 
 class Party:
@@ -34,15 +37,24 @@ class Party:
         self.NUMOFDATA=0
         self.Net=Net(NF,NH1,NH2,NO)
         self.Y=None
-    def Update(self):
+    def Update(self,mu,sigma,bad=False):
         self.NUMOFDATA=len(self.Data)
         self.NUMOFFEATURE=len(self.Data[0])-1
-        #print("self.NUM_OF_FEATURE is {}".format(self.NUMOFFEATURE))
+        #原数据0和1，变成-1和1
         for index,item in enumerate(self.Data):
             if item[-1]==0:
                 self.Data[index][-1]=-1
-        self.Y=Variable(torch.from_numpy(np.array([item[-1] for item in self.Data]).reshape(self.NUMOFDATA,1)).float())#是或者不是
-        self.Data=Variable(torch.from_numpy(np.array([item[:-1] for item in self.Data])).float())
+        self.Y=Variable(torch.from_numpy(np.array([item[-1] for item in self.Data]).reshape(self.NUMOFDATA,1)).float())
+        if not bad:
+            self.Data=Variable(torch.from_numpy(np.array([item[:-1] for item in self.Data])).float())
+        else:
+            python_data=[]
+            for item in self.Data:#line
+                temp=[value+random.gauss(mu,sigma) for value in item[:-2]]
+                temp.append(item[-2])
+                python_data.append(temp)
+            self.Data=np.array(python_data)
+            self.Data = Variable(torch.from_numpy(self.Data)).float()
 
 
     def Train(self):
@@ -50,40 +62,19 @@ class Party:
         LossFunction=torch.nn.SoftMarginLoss()
 
         loss_list=[]
-        prediction = self.Net(self.Data)
-        loss = LossFunction(prediction, self.Y)
 
-        last = loss.detach().numpy()
-        loss_list.append(last)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        for i in range(300):
+            prediction = self.Net(self.Data)
+            loss = LossFunction(prediction, self.Y)
 
-        prediction = self.Net(self.Data)
-        loss = LossFunction(prediction, self.Y)
-        now = loss.detach().numpy()
-        loss_list.append(now)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-
-        while last-now>1e-5:
-            prediction=self.Net(self.Data)
-            loss=LossFunction(prediction,self.Y)
-            last=now
-            now=loss.detach().numpy()
+            last = loss.detach().numpy()
             loss_list.append(last)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-        #plt.plot(x,loss_list)
-        #plt.show()
         return loss_list
 
-    def DeepNetPredict(self,feature):
-        return self.Net(feature)
     def ConvertFeature(self,feature):
         res=[]
         for item in feature:
@@ -92,75 +83,6 @@ class Party:
                 res.append(self.GetClass[item])
             else:return []
         return res
-
-class DataLoader():
-    def __init__(self):
-        self.RawData = []
-        self.Data = []
-        self.GetClass = {}
-        self.SecondFeatureMin = 12285
-        self.SecondFeatureMax = 1484705
-        self.Second = self.SecondFeatureMax - self.SecondFeatureMin
-
-        self.NUMOFFEATURE = 0
-        self.NUMOFDATA = 0
-    def LoadData(self,PATH):
-        with open(PATH,'r') as f:
-            for line in f:
-                self.RawData.append([thing.strip() for thing in line.split(',')])
-        self.RawData=self.RawData[:-1]
-        self.NUMOFDATA=len(self.RawData)
-        NUM_OF_FEATURE=len(self.RawData[0])-1
-        #print(NUM_OF_FEATURE)
-
-    def ShowRawData(self):
-        for item in self.RawData:
-            print(item)
-    def WashData(self):
-        attribute=len(self.RawData[0])
-        #print("attribute: {}".format(attribute))
-
-        index=0
-        while index<attribute:
-            #print('index: {}'.format(index))
-            cnt=0
-            temp=[i[index] for i in self.RawData]
-
-            for item in temp:
-                if item not in self.GetClass:
-                    self.GetClass[item]=cnt
-                    cnt+=1
-            index+=1
-        self.NUMOFFEATURE=index
-
-        #print("feature number is {}.".format(self.NUMOFFEATURE))
-        for line in self.RawData:
-            t = []
-            for j,f in enumerate(line):
-                if j==0:
-                    t.append(float(f)/10)
-                elif j==2:
-                    t.append(round(float(f)/self.Second,4))
-                elif j==10 or j==11:
-                    t.append(float(f)/2000)
-                elif j==12:
-                    t.append(float(f)/10)
-                else:
-                    t.append(self.GetClass[f]/10)
-            self.Data.append(t)
-
-        #print("data length is {}".format(len(self.Data[0])))
-    def ShowData(self):
-        for item in self.Data:
-            print(item)
-    def AssignSpecificData(self,Party,start,end):
-        Party.Data=self.Data[start:end]
-    def AssignRandomData(self,Party,howmany):
-        cnt=1
-        while cnt<howmany:
-            index=random.randint(0,self.NUMOFDATA-1)
-            Party.Data.append(self.Data[index])
-            cnt+=1
 
 class Tester:
     def __init__(self):
@@ -175,28 +97,19 @@ class Tester:
         for index,item in enumerate(self.Data):
             if item[-1]==0:
                 self.Data[index][-1]=-1
-        self.Y=Variable(torch.from_numpy(np.array([item[-1] for item in self.Data]).reshape(self.NUMOFDATA,1)).float())#是或者不是
+        self.Y=Variable(torch.from_numpy(np.array([item[-1] for item in self.Data]).reshape(self.NUMOFDATA,1)).float())
         self.Data=Variable(torch.from_numpy(np.array([item[:-1] for item in self.Data])).float())
 
     def Test(self,A):
-        LossFunction = torch.nn.SoftMarginLoss()
-        prediction = A.Net(self.Data)
-        loss=LossFunction(prediction,self.Y)
-        return loss.detach().numpy()
+        correct=0
+        for data in self.Data:
+            prediction =1 if A.Net(data)>0.5 else 0
+            # print('prediction',prediction)
 
-def OneGuyManyTime(who,time):
-    loss = []
-    loss.clear()
-    for i in range(time):
-        loss.append(who.Train())
-    plt.figure()
-    plt.title('{} times in one party'.format(time))
-    for i in range(time):
-        plt.subplot(2, 3, i + 1)
-        plt.plot([num for num in range(len(loss[i]))], loss[i])
-        plt.ylim(0,1)
+            if prediction==data[-1]:
+                correct+=1
+        return correct/len(self.Data)
 
-    plt.show()
 
 def FiveGuysOneTime(who):
     loss=[]
@@ -222,48 +135,57 @@ def ShowError(who,tester):
 
 
 if __name__=="__main__":
-    FilePath=r'C:\Users\Lenovo\Desktop\adult.data'
 
-    #simulation of federated learning
-    #loader进行装载、清洗数据
+    file_path= r'data-source\adult.csv'
+
+    losts=[]
     loader=DataLoader()
-    loader.LoadData(FilePath)
+    loader.LoadData(file_path)
     loader.WashData()
-    #loader.ShowData()
+    loader.ShowData(5)
 
-    #assign data to 5 parties.
+    people = []
+    plain=Party(14, 10, 9, 1)
+    loader.AssignSpecificData(plain, 0, 10000)
+    plain.Update(0,1)
+    losts.append(plain.Train())
+    people.append(plain)
 
-    p=[]
+    mu,sigma=0,1
+    x=0
+    for i in range(4):
+        t=Party(14, 10, 9, 1)
+        loader.AssignSpecificData(t, 0, 10000)
+        t.Update(bad=True, mu=mu, sigma=sigma+x)
+        x+=3
+        losts.append(t.Train())
+        people.append(t)
+
+    plt.figure()
     for i in range(5):
-        temp=Party(14,10,9,1)
-        loader.AssignRandomData(temp,2000)
-        temp.Update()
+        plt.subplot(2,3,i+1)
+        plt.plot([i for i in range(len(losts[i]))],losts[i])
 
-        p.append(temp)
-
-    #assign data to global aggregator
-    Global=Party(14,10,9,1)
-    loader.AssignRandomData(Global,10000)
-    Global.Update()
-    p.append(Global)
-
-    #train once in all parties including global one.
-    FiveGuysOneTime(p)
-
-    #test error status.
-    tester=Tester()
-    loader.AssignSpecificData(tester,31000,32000)
+    plt.show()
+    #run test
+    tester = Tester()
+    loader.AssignSpecificData(tester, 31000, 32000)
     tester.Update()
 
-    ShowError(p,tester)
+
+    accuracy=[]
+    plt.figure()
+    plt.title("Accuracy")
+    for p in people:
+        accuracy.append(tester.Test(p))
+
+    plt.bar([i + 1 for i in range(len(people))], accuracy)
+    print(accuracy)
+    plt.ylim(0.89, 0.91)
+    plt.show()
+
 
 
     exit(0)
-
-
-    #1.数据选取
-    #2.特征表示
-    #3.训练网络（规模、参数）
-    #4.test写错
 
 
